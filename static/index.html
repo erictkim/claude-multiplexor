@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Claude Multiplexor</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Claude Multiplexor</h1>
+    <span class="meta"><span id="dot" class="dot dead"></span><span id="conn">connecting…</span></span>
+    <span class="meta" id="count">0 sessions</span>
+    <span class="hint">
+      <kbd>1</kbd>–<kbd>9</kbd> switch ·
+      <kbd>j</kbd>/<kbd>k</kbd> move ·
+      <kbd>Enter</kbd> switch ·
+      <code>/name foo</code> in CLI to label
+    </span>
+  </header>
+  <div id="grid"></div>
+  <div id="toast" class="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

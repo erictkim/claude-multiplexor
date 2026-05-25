@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-multiplexor"
+version = "0.1.0"
+description = "Local dashboard for switching between Claude Code CLI sessions running in tmux."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Eric Kim" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "sse-starlette>=2.0",
+    "httpx>=0.27",
+    "redis>=5.0",
+]
+
+[project.scripts]
+claude-mux = "claude_multiplexor.cli:main"
+claude-mux-hook = "claude_multiplexor.hook_push:main_entry"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
