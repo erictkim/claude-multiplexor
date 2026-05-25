@@ -7,12 +7,15 @@ right tmux pane already focused.
 ## What it does
 
 - Lists every running `claude` session with live status (busy / waiting-input /
-  waiting-permission / ready / stale / error).
+  waiting-permission / ready / background / stale / error).
 - Shows the latest user prompt as a summary.
+- Tracks background tool_use lifecycle from the transcript jsonl: cards flip to
+  a `background` pill while a task is pending and show the latest label.
 - Lets you label sessions from inside the CLI: `/name pricing-bug` or
   `/rename pricing-bug`. Names persist across dashboard restarts.
-- **Click a card (or hit `1`–`9`)** → runs `tmux switch-client` and activates
-  the terminal app holding the tmux client. Typical end-to-end ~50 ms.
+- **Click a card (or hit `1`–`9`)** → either attaches the session in an
+  embedded xterm.js pane (default) or runs `tmux switch-client` to bring the
+  external terminal to front. Typical end-to-end ~50 ms.
 
 ## Requirements
 
@@ -48,7 +51,9 @@ To remove hooks later: `claude-mux uninstall-hooks`.
 
 ## Usage
 
-- **Click a card** to focus its tmux pane and bring the terminal to front.
+- **Click a card** to attach the session in the embedded terminal pane (right
+  side). Toggle to external-terminal mode in the header to switch the local
+  tmux client + activate the host terminal app instead.
 - **`1`–`9`** quick-switch to Nth session.
 - **`j`/`k`** highlight up/down; **Enter** switches.
 - **`/name <text>`** in the CLI sets the card label; **`/name`** clears it.
@@ -72,7 +77,9 @@ Env vars (all optional):
 claude CLI ─hook(stdin JSON)─> claude-mux-hook ─Redis|HTTP─> server.py
                                                                 │
                                                                 ├─ in-mem session map
+                                                                ├─ transcript jsonl scan (bg tool_use)
                                                                 ├─ SSE /events ──> web UI
+                                                                ├─ WS /ws/embed ──> xterm.js (grouped tmux)
                                                                 └─ POST /switch/{sid}
                                                                        │
                                                                        └─ tmux select-pane/window
