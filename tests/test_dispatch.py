@@ -44,6 +44,75 @@ def test_agent_name_pulled_from_transcript(tmp_path, monkeypatch):
     assert server.sessions[sid]["display_name"] == "pricing-bug"
 
 
+def test_bg_pending_counts_started_minus_completed(tmp_path, monkeypatch):
+    encoded_cwd = "/Users/eric/Projects/foo"
+    encoded_dir = tmp_path / encoded_cwd.replace("/", "-")
+    encoded_dir.mkdir()
+    sid = "s1"
+    transcript = encoded_dir / f"{sid}.jsonl"
+    import json as _json
+    lines = [
+        _json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "id": "tu_1", "name": "Bash",
+                 "input": {"run_in_background": True, "description": "run backtest"}}
+            ]},
+        }),
+        _json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "id": "tu_2", "name": "Bash",
+                 "input": {"run_in_background": True, "description": "another"}}
+            ]},
+        }),
+        # tu_1 finished via task-notification
+        _json.dumps({
+            "type": "user",
+            "message": {"content": (
+                "<task-notification>\n<tool-use-id>tu_1</tool-use-id>\n"
+                "<status>completed</status>\n</task-notification>"
+            )},
+        }),
+    ]
+    transcript.write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr(server, "PROJECTS_DIR", tmp_path)
+    server.dispatch_event("SessionStart", {"session_id": sid, "cwd": encoded_cwd})
+    server.dispatch_event("Stop", {"session_id": sid})
+    assert server.sessions[sid]["bg_pending"] == 1
+    assert server.sessions[sid]["bg_label"] == "another"
+    assert server.sessions[sid]["status"] == "background"
+
+
+def test_bg_pending_clears_status_when_zero(tmp_path, monkeypatch):
+    encoded_cwd = "/Users/eric/Projects/foo"
+    encoded_dir = tmp_path / encoded_cwd.replace("/", "-")
+    encoded_dir.mkdir()
+    sid = "s1"
+    transcript = encoded_dir / f"{sid}.jsonl"
+    import json as _json
+    transcript.write_text(
+        _json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "id": "tu_1", "name": "Bash",
+                 "input": {"run_in_background": True, "description": "x"}}
+            ]},
+        }) + "\n"
+        + _json.dumps({
+            "type": "user",
+            "message": {"content": (
+                "<task-notification><tool-use-id>tu_1</tool-use-id><status>completed</status></task-notification>"
+            )},
+        }) + "\n"
+    )
+    monkeypatch.setattr(server, "PROJECTS_DIR", tmp_path)
+    server.dispatch_event("SessionStart", {"session_id": sid, "cwd": encoded_cwd})
+    server.dispatch_event("Stop", {"session_id": sid})
+    assert server.sessions[sid]["bg_pending"] == 0
+    assert server.sessions[sid]["status"] == "ready"
+
+
 def test_agent_name_latest_wins(tmp_path, monkeypatch):
     encoded_cwd = "/Users/eric/Projects/foo"
     encoded_dir = tmp_path / encoded_cwd.replace("/", "-")

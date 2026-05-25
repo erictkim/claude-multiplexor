@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <title>Claude Multiplexor</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -15,11 +16,27 @@
       <kbd>1</kbd>–<kbd>9</kbd> switch ·
       <kbd>j</kbd>/<kbd>k</kbd> move ·
       <kbd>Enter</kbd> switch ·
-      <code>/name foo</code> in CLI to label
+      <code>/rename foo</code> to label
     </span>
   </header>
-  <div id="grid"></div>
+  <main id="main">
+    <section id="grid-pane">
+      <div id="grid"></div>
+    </section>
+    <div id="splitter" title="Drag to resize"></div>
+    <section id="term-pane">
+      <div id="term-head">
+        <div id="term-title">no session</div>
+        <div id="term-actions">
+          <button id="term-clear" type="button" title="Detach embedded view">Detach</button>
+        </div>
+      </div>
+      <div id="term-body"></div>
+    </section>
+  </main>
   <div id="toast" class="toast"></div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
