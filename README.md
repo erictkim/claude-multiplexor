@@ -17,6 +17,27 @@ right tmux pane already focused.
   embedded xterm.js pane (default) or runs `tmux switch-client` to bring the
   external terminal to front. Typical end-to-end ~50 ms.
 
+## ⚠️ Security
+
+**Local use only. No authentication.** The server binds to `127.0.0.1` by
+default and ships with no auth, no TLS, and no access controls. The
+`/ws/embed` WebSocket attaches a live tmux pty — anyone who can reach the
+port can read and write to your `claude` sessions and execute arbitrary
+shell commands as your user.
+
+Do **not**:
+
+- Bind to a non-loopback address (`--host 0.0.0.0`, public IPs, LAN
+  interfaces).
+- Expose the port through ngrok, Cloudflare Tunnel, SSH `-R`, reverse proxies,
+  or container port-forwards to anything other than your own loopback.
+- Run it on a shared machine where other users you don't trust have local
+  network access.
+
+If you need remote access, terminate auth + TLS in front of it yourself
+(e.g. SSH local-forward `-L 8765:127.0.0.1:8765`) — this project will not
+do it for you.
+
 ## Requirements
 
 - tmux. You must run `claude` inside a tmux pane.
