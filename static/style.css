@@ -3,14 +3,14 @@
   --panel: #161b22;
   --panel-2: #1f262e;
   --border: #2a313a;
-  --text: #d8dee4;
-  --muted: #8a93a0;
-  --green: #3fb950;
-  --yellow: #d29922;
-  --orange: #db6d28;
-  --blue: #58a6ff;
-  --red: #f85149;
-  --grey: #6e7681;
+  --text: #f0f3f6;
+  --muted: #c9d1d9;
+  --green: #5ed46e;
+  --yellow: #f0b73a;
+  --orange: #ff8c47;
+  --blue: #7cb8ff;
+  --red: #ff6b62;
+  --grey: #a0a8b3;
 }
 
 * { box-sizing: border-box; }
@@ -63,7 +63,8 @@ header kbd {
 }
 .card:hover { border-color: var(--blue); }
 .card:active { transform: scale(0.997); }
-.card.no-tmux { cursor: not-allowed; opacity: 0.7; }
+.card.no-tmux { cursor: not-allowed; opacity: 1; }
+.card.no-tmux .pill { opacity: 0.75; }
 .card.no-tmux:hover { border-color: var(--border); }
 .card.busy { border-color: rgba(88, 166, 255, 0.5); }
 .card.waiting_input { border-color: rgba(210, 153, 34, 0.6); }
@@ -127,12 +128,12 @@ header kbd {
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
-.pill.ready { background: rgba(63,185,80,0.15); color: var(--green); }
-.pill.busy { background: rgba(88,166,255,0.18); color: var(--blue); }
-.pill.waiting_input { background: rgba(210,153,34,0.18); color: var(--yellow); }
-.pill.waiting_permission { background: rgba(219,109,40,0.22); color: var(--orange); }
-.pill.stale, .pill.error { background: rgba(248,81,73,0.18); color: var(--red); }
-.pill.ended { background: rgba(110,118,129,0.2); color: var(--grey); }
+.pill.ready { background: rgba(94,212,110,0.25); color: var(--green); }
+.pill.busy { background: rgba(124,184,255,0.28); color: var(--blue); }
+.pill.waiting_input { background: rgba(240,183,58,0.28); color: var(--yellow); }
+.pill.waiting_permission { background: rgba(255,140,71,0.32); color: var(--orange); }
+.pill.stale, .pill.error { background: rgba(255,107,98,0.28); color: var(--red); }
+.pill.ended { background: rgba(160,168,179,0.3); color: var(--grey); }
 
 .summary {
   color: var(--text);
@@ -144,7 +145,7 @@ header kbd {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.summary.empty { color: var(--muted); font-style: italic; }
+.summary.empty { color: var(--muted); font-style: italic; opacity: 1; }
 
 .meta {
   display: flex;
