@@ -11,19 +11,20 @@ right tmux pane already focused.
 - Shows the latest user prompt as a summary.
 - Tracks background tool_use lifecycle from the transcript jsonl: cards flip to
   a `background` pill while a task is pending and show the latest label.
-- Lets you label sessions from inside the CLI: `/name pricing-bug` or
-  `/rename pricing-bug`. Names persist across dashboard restarts.
+- Lets you label sessions from inside the CLI: `/name my-session` or
+  `/rename my-session`. Names persist across dashboard restarts.
 - **Click a card (or hit `1`–`9`)** → either attaches the session in an
   embedded xterm.js pane (default) or runs `tmux switch-client` to bring the
   external terminal to front. Typical end-to-end ~50 ms.
 
 ## Requirements
 
-- macOS (uses `osascript` to activate terminal apps).
 - tmux. You must run `claude` inside a tmux pane.
 - Python 3.10+.
-- Optional: Redis (used as the hook → server transport; HTTP fallback is
-  automatic).
+- Optional: a running Redis daemon. The hook prefers a Redis Stream transport
+  but falls back to HTTP automatically when Redis is unreachable, so a daemon
+  is not required. (The `redis` Python client is installed as a dependency
+  regardless.)
 
 ## Install
 
@@ -84,13 +85,15 @@ claude CLI ─hook(stdin JSON)─> claude-mux-hook ─Redis|HTTP─> server.py
                                                                        │
                                                                        └─ tmux select-pane/window
                                                                           tmux switch-client
-                                                                          osascript activate <app>
+                                                                          (macOS: osascript activate <app>)
 ```
 
-`switch.py` detects which terminal app holds the tmux client via
-`tmux list-clients -F '#{client_termname}'` and maps to a bundle ID:
-iTerm2, Terminal.app, WezTerm, Alacritty, kitty, Ghostty. Unknown terminals
-fall back to a best-effort activation of any common terminal app.
+`switch.py` runs `tmux select-pane`/`select-window`/`switch-client` to focus
+the right pane. On macOS it additionally activates the host terminal app via
+`osascript` — it detects the app via `tmux list-clients -F
+'#{client_termname}'` and maps to a bundle ID (iTerm2, Terminal.app, WezTerm,
+Alacritty, kitty, Ghostty). On other OSes the tmux-side switch happens; the
+host terminal is not auto-raised.
 
 ## Tests
 
