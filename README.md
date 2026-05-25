@@ -69,6 +69,14 @@ Register hooks (idempotent, backs up your settings.json once):
 
 Open `http://127.0.0.1:8765/`. Start `claude` in a tmux pane — card appears.
 
+### Starting more sessions
+
+You only need one tmux session running. To add another `claude` instance,
+press the tmux prefix (default `Ctrl-b`) then `c` to open a new window,
+`cd` into the project you want, and run `claude`. A second card will appear
+on the dashboard. Repeat for as many as you want — `Ctrl-b n` / `Ctrl-b p`
+to cycle windows in the terminal, or just click the card.
+
 To remove hooks later: `claude-mux uninstall-hooks`.
 
 ## Usage
