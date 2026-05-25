@@ -571,36 +571,82 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-def _spawn_grouped_view(socket: str, target: str, window: str | None) -> tuple[int, int, str]:
+def _spawn_grouped_view(
+    socket: str, target: str, window: str | None, cols: int, rows: int
+) -> tuple[int, int, str]:
     """Fork a child running `tmux new-session -A -s <view> -t <target>` on a PTY.
 
     Grouped session means: window operations on the view do NOT affect other
     clients attached to <target>. Killing the view leaves <target> alone.
     """
     view_name = f"mux_{uuid.uuid4().hex[:8]}"
+    cols = max(1, min(cols, 1000))
+    rows = max(1, min(rows, 500))
     pid, fd = pty.fork()
     if pid == 0:
         try:
             os.environ.pop("TMUX", None)
-            args = [TMUX_BIN, "-S", socket, "new-session", "-A", "-s", view_name, "-t", target]
+            args = [
+                TMUX_BIN, "-S", socket, "new-session", "-A",
+                "-s", view_name, "-t", target,
+                "-x", str(cols), "-y", str(rows),
+            ]
             os.execvp(args[0], args)
         except Exception:
             os._exit(127)
+    return pid, fd, view_name
+
+
+def _configure_view_sync(
+    socket: str, view_name: str, window: str | None, cols: int, rows: int
+) -> None:
+    """Apply window-size policy + force exact dims synchronously.
+
+    Called right after spawn so the view's first render uses our dims, not the
+    smallest other client attached to the target session.
+    """
+    import subprocess
+    cols = max(1, min(cols, 1000))
+    rows = max(1, min(rows, 500))
+    cmds = [
+        ["set-option", "-t", view_name, "window-size", "manual"],
+        ["set-option", "-t", view_name, "aggressive-resize", "on"],
+        ["resize-window", "-t", view_name, "-x", str(cols), "-y", str(rows)],
+    ]
     if window:
-        def _focus() -> None:
-            time.sleep(0.2)
+        cmds.append(["select-window", "-t", f"{view_name}:{window}"])
+    # Retry briefly: tmux server may not have registered the new session yet.
+    deadline = time.monotonic() + 1.5
+    for args in cmds:
+        while True:
             try:
-                import subprocess
-                subprocess.run(
-                    [TMUX_BIN, "-S", socket, "select-window", "-t", f"{view_name}:{window}"],
+                r = subprocess.run(
+                    [TMUX_BIN, "-S", socket, *args],
                     timeout=2.0, check=False,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 )
+                if r.returncode == 0:
+                    break
             except Exception:
                 pass
-        import threading
-        threading.Thread(target=_focus, daemon=True).start()
-    return pid, fd, view_name
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+
+
+async def _resize_window(socket: str, view_name: str, cols: int, rows: int) -> None:
+    """Force the view's active window to exact dims (requires window-size manual)."""
+    cols = max(1, min(cols, 1000))
+    rows = max(1, min(rows, 500))
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            TMUX_BIN, "-S", socket, "resize-window",
+            "-t", view_name, "-x", str(cols), "-y", str(rows),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+    except Exception:
+        pass
 
 
 async def _kill_view(socket: str, view_name: str) -> None:
@@ -715,13 +761,48 @@ async def embed_ws(ws: FastAPIWebSocket) -> None:
         if not socket or not target:
             return "session not in tmux"
         await teardown_current()
-        pid, fd, view_name = _spawn_grouped_view(socket, target, window)
+        cols, rows = state["cols"], state["rows"]
+        log.info("embed open: sid=%s target=%s window=%s dims=%dx%d",
+                 sid, target, window, cols, rows)
+        pid, fd, view_name = _spawn_grouped_view(socket, target, window, cols, rows)
         state["socket"] = socket
         state["view_name"] = view_name
         state["pid"] = pid
         state["fd"] = fd
-        _set_winsize(fd, state["rows"], state["cols"])
+        _set_winsize(fd, rows, cols)
+        # Configure window-size policy + force exact dims before first render.
+        # Done off the event loop because subprocess.run blocks; await ensures
+        # client doesn't see stale (truncated) output before policy takes hold.
+        await loop.run_in_executor(
+            None, _configure_view_sync, socket, view_name, window, cols, rows
+        )
         install_reader(fd)
+
+        # Tmux may recompute window size shortly after attach because of
+        # grouped-session reconciliation or another client's SIGWINCH. Re-apply
+        # our size a few times so the final state is ours.
+        async def _reapply() -> None:
+            for delay in (0.15, 0.4, 1.0):
+                await asyncio.sleep(delay)
+                if state["view_name"] != view_name:
+                    return
+                c, r = state["cols"], state["rows"]
+                if state["fd"] >= 0:
+                    try:
+                        _set_winsize(state["fd"], r, c)
+                    except OSError:
+                        pass
+                await _resize_window(socket, view_name, c, r)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    TMUX_BIN, "-S", socket, "refresh-client", "-t", view_name,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except Exception:
+                pass
+        asyncio.create_task(_reapply())
         return None
 
     async def reader() -> None:
@@ -768,6 +849,13 @@ async def embed_ws(ws: FastAPIWebSocket) -> None:
                         state["rows"] = int(ctl.get("rows", state["rows"]))
                         if state["fd"] >= 0:
                             _set_winsize(state["fd"], state["rows"], state["cols"])
+                        # window-size manual: pty SIGWINCH alone won't resize
+                        # the tmux window. Force it via resize-window too.
+                        if state["socket"] and state["view_name"]:
+                            asyncio.create_task(_resize_window(
+                                state["socket"], state["view_name"],
+                                state["cols"], state["rows"],
+                            ))
                     except (TypeError, ValueError, OSError):
                         pass
                 elif ctype == "input":

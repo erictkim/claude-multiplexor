@@ -100,6 +100,8 @@
   let ws = null;
   let wsReady = false;
   let pendingSid = null;
+  let resizeObs = null;
+  let lastSent = { cols: 0, rows: 0 };
 
   function ensureTerm() {
     if (term) return;
@@ -116,19 +118,31 @@
     fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
     term.open(termBody);
-    requestAnimationFrame(() => { try { fit.fit(); } catch {} });
+    requestAnimationFrame(() => { try { fit.fit(); sendResize(); } catch {} });
     term.onData(d => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'input', data: d }));
       }
     });
     window.addEventListener('resize', sendResize);
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObs = new ResizeObserver(() => {
+        requestAnimationFrame(sendResize);
+      });
+      resizeObs.observe(termBody);
+    }
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => requestAnimationFrame(sendResize)).catch(() => {});
+    }
   }
 
   function sendResize() {
     if (!term || !fit || !ws || ws.readyState !== WebSocket.OPEN) return;
     try { fit.fit(); } catch { return; }
     const { cols, rows } = term;
+    if (!cols || !rows) return;
+    if (cols === lastSent.cols && rows === lastSent.rows) return;
+    lastSent = { cols, rows };
     ws.send(JSON.stringify({ type: 'resize', cols, rows }));
   }
 
@@ -166,22 +180,27 @@
       pendingSid = sid;
       return;
     }
-    try { fit.fit(); } catch {}
-    const cols = term.cols, rows = term.rows;
-    ws.send(JSON.stringify({ type: 'switch', session_id: sid, cols, rows }));
     activeSid = sid;
     const s = snapshot.find(x => x.session_id === sid);
     termTitle.textContent = s ? ((s.display_name && s.display_name.trim()) || basename(s.cwd)) : sid;
     render();
-    if (term) term.focus();
+    requestAnimationFrame(() => {
+      try { fit.fit(); } catch {}
+      const cols = term.cols, rows = term.rows;
+      lastSent = { cols, rows };
+      ws.send(JSON.stringify({ type: 'switch', session_id: sid, cols, rows }));
+      if (term) term.focus();
+    });
   }
 
   function detachEmbed() {
+    if (resizeObs) { try { resizeObs.disconnect(); } catch {} resizeObs = null; }
     if (ws) try { ws.close(); } catch {}
     ws = null;
     wsReady = false;
     if (term) { term.dispose(); term = null; }
     fit = null;
+    lastSent = { cols: 0, rows: 0 };
     termBody.innerHTML = 'click a session to attach';
     termBody.classList.add('empty');
     termTitle.textContent = 'no session';
