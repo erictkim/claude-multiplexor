@@ -102,6 +102,56 @@
   let pendingSid = null;
   let resizeObs = null;
   let lastSent = { cols: 0, rows: 0 };
+  let inScroll = false;
+  let wheelAccum = 0;
+  let wheelScheduled = false;
+
+  function sendTmuxCmd(action, lines) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const msg = { type: 'tmux_cmd', action };
+    if (lines) msg.lines = lines;
+    ws.send(JSON.stringify(msg));
+  }
+
+  function exitScrollMode() {
+    if (!inScroll) return;
+    inScroll = false;
+    // Send `q` through the pty (same channel as user input) so tmux exits
+    // copy-mode before the user's keystroke arrives. Going through
+    // `tmux_cmd cancel` would race: subprocess send-keys is slower than
+    // os.write to the pty, so the typed key gets consumed by copy-mode.
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data: 'q' }));
+    }
+  }
+
+  function flushWheel() {
+    wheelScheduled = false;
+    const delta = wheelAccum;
+    wheelAccum = 0;
+    if (!delta) return;
+    // ~40px per line is the conventional wheel-line height.
+    const lines = Math.max(1, Math.min(50, Math.round(Math.abs(delta) / 40)));
+    sendTmuxCmd(delta < 0 ? 'scroll_up' : 'scroll_down', lines);
+    inScroll = true;
+  }
+
+  function onTermWheel(e) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    e.preventDefault();
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= 16;       // lines → px
+    else if (e.deltaMode === 2) dy *= 400; // pages → px
+    wheelAccum += dy;
+    if (!wheelScheduled) {
+      wheelScheduled = true;
+      requestAnimationFrame(flushWheel);
+    }
+  }
+
+  function onTermKeyDown() {
+    if (inScroll) exitScrollMode();
+  }
 
   function ensureTerm() {
     if (term) return;
@@ -124,6 +174,9 @@
         ws.send(JSON.stringify({ type: 'input', data: d }));
       }
     });
+    termBody.addEventListener('wheel', onTermWheel, { passive: false, capture: true });
+    termBody.addEventListener('keydown', onTermKeyDown, true);
+    termBody.addEventListener('mousedown', onTermKeyDown, true);
     window.addEventListener('resize', sendResize);
     if (typeof ResizeObserver !== 'undefined') {
       resizeObs = new ResizeObserver(() => {
@@ -180,6 +233,9 @@
       pendingSid = sid;
       return;
     }
+    // Switching tears down the current view, so any copy-mode state dies with it.
+    inScroll = false;
+    wheelAccum = 0;
     activeSid = sid;
     const s = snapshot.find(x => x.session_id === sid);
     termTitle.textContent = s ? ((s.display_name && s.display_name.trim()) || basename(s.cwd)) : sid;
@@ -195,6 +251,13 @@
 
   function detachEmbed() {
     if (resizeObs) { try { resizeObs.disconnect(); } catch {} resizeObs = null; }
+    try {
+      termBody.removeEventListener('wheel', onTermWheel, { capture: true });
+      termBody.removeEventListener('keydown', onTermKeyDown, true);
+      termBody.removeEventListener('mousedown', onTermKeyDown, true);
+    } catch {}
+    inScroll = false;
+    wheelAccum = 0;
     if (ws) try { ws.close(); } catch {}
     ws = null;
     wsReady = false;

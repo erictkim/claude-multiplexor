@@ -36,7 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 from fastapi import WebSocket as FastAPIWebSocket
 
-from . import naming
+from . import naming, state
 from .switch import SwitchError, SwitchTarget, switch_to
 
 SUMMARY_MAX = 120
@@ -52,6 +52,8 @@ log = logging.getLogger("claude_multiplexor")
 sessions: dict[str, dict[str, Any]] = {}
 subscribers: set[asyncio.Queue] = set()
 _names_cache: dict[str, str] = {}
+_state_dirty: asyncio.Event | None = None
+STATE_SAVE_DEBOUNCE_SEC = 0.5
 
 
 def now() -> float:
@@ -129,42 +131,46 @@ def scan_bg_pending(path: Path) -> tuple[int, str | None]:
     except OSError:
         return 0, None
 
+    # Two passes: (1) collect every tool-use-id ever mentioned by a
+    # task-notification — regardless of which transcript message type wraps it
+    # (user message, attachment, queue-operation, etc; recent Claude Code
+    # writes notifications across all three). (2) collect bg tool_uses,
+    # excluding any whose id was already notified-as-completed. This makes the
+    # accounting order-independent within the transcript.
+    completed: set[str] = set()
+    for line in data.splitlines():
+        if "task-notification" not in line:
+            continue
+        for m in BG_NOTIF_RE.finditer(line):
+            completed.add(m.group(1).strip())
+
     started: dict[str, str] = {}  # tool_use_id -> short label
     for line in data.splitlines():
-        if '"run_in_background"' not in line and "task-notification" not in line:
+        if '"run_in_background"' not in line:
             continue
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        # Assistant message with tool_use blocks
-        if isinstance(obj, dict) and obj.get("type") == "assistant":
-            msg = obj.get("message") or {}
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            for c in content:
-                if not isinstance(c, dict):
-                    continue
-                if c.get("type") != "tool_use":
-                    continue
-                inp = c.get("input") or {}
-                if not inp.get("run_in_background"):
-                    continue
-                tid = c.get("id")
-                if not isinstance(tid, str):
-                    continue
-                label = (inp.get("description") or c.get("name") or "background")
-                started[tid] = str(label)[:60]
+        if not (isinstance(obj, dict) and obj.get("type") == "assistant"):
             continue
-        # User message containing task-notification system reminders
-        if isinstance(obj, dict) and obj.get("type") == "user":
-            msg = obj.get("message") or {}
-            content = msg.get("content")
-            raw = content if isinstance(content, str) else json.dumps(content)
-            for m in BG_NOTIF_RE.finditer(raw):
-                tid = m.group(1).strip()
-                started.pop(tid, None)
+        msg = obj.get("message") or {}
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") != "tool_use":
+                continue
+            inp = c.get("input") or {}
+            if not inp.get("run_in_background"):
+                continue
+            tid = c.get("id")
+            if not isinstance(tid, str) or tid in completed:
+                continue
+            label = (inp.get("description") or c.get("name") or "background")
+            started[tid] = str(label)[:60]
 
     if not started:
         return 0, None
@@ -246,6 +252,62 @@ async def broadcast() -> None:
             dead.append(q)
     for q in dead:
         subscribers.discard(q)
+    mark_state_dirty()
+
+
+def mark_state_dirty() -> None:
+    """Signal the saver loop that `sessions` needs to be persisted."""
+    if _state_dirty is not None:
+        _state_dirty.set()
+
+
+async def state_saver() -> None:
+    """Persist `sessions` to disk, debounced. Coalesces bursts of mutations."""
+    assert _state_dirty is not None
+    loop = asyncio.get_running_loop()
+    while True:
+        await _state_dirty.wait()
+        _state_dirty.clear()
+        await asyncio.sleep(STATE_SAVE_DEBOUNCE_SEC)
+        try:
+            snap = {sid: dict(s) for sid, s in sessions.items()}
+            await loop.run_in_executor(None, state.save, snap)
+        except Exception as e:
+            log.warning("state save failed: %s", e)
+
+
+def bootstrap_sessions_from_disk() -> None:
+    """Load persisted sessions, drop entries whose tmux pane no longer exists.
+
+    Transient runtime fields (status=busy, current_tool, etc.) are reset so
+    the dashboard does not show stale "in progress" state for processes that
+    are no longer being tracked by live hook events.
+    """
+    loaded = state.load()
+    if not loaded:
+        return
+    kept = 0
+    for sid, payload in loaded.items():
+        socket = payload.get("tmux_socket") or ""
+        sess = payload.get("tmux_session") or ""
+        window = payload.get("tmux_window") or ""
+        pane = payload.get("tmux_pane") or ""
+        if not state.tmux_pane_alive(TMUX_BIN, socket, sess, window, pane):
+            continue
+        # Carry forward identity + tmux mapping; reset transient state. The
+        # next hook event will replace these with live values.
+        payload["current_tool"] = None
+        payload["pending_msg"] = None
+        payload["error"] = None
+        payload.pop("base_status", None)
+        if payload.get("status") not in ("ready", "background"):
+            payload["status"] = "ready"
+        sessions[sid] = payload
+        # Re-derive background-task count from the transcript, then agent name.
+        refresh_bg_state(payload)
+        refresh_agent_name(payload)
+        kept += 1
+    log.info("bootstrap: restored %d/%d sessions from disk", kept, len(loaded))
 
 
 # --- per-event handlers -----------------------------------------------------
@@ -476,9 +538,11 @@ async def redis_consumer() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _names_cache
+    global _names_cache, _state_dirty
     _names_cache = naming.load()
-    tasks = [asyncio.create_task(scanner())]
+    _state_dirty = asyncio.Event()
+    bootstrap_sessions_from_disk()
+    tasks = [asyncio.create_task(scanner()), asyncio.create_task(state_saver())]
     if REDIS_ENABLED:
         tasks.append(asyncio.create_task(redis_consumer()))
     try:
@@ -486,6 +550,12 @@ async def lifespan(app: FastAPI):
     finally:
         for t in tasks:
             t.cancel()
+        # Flush a final snapshot so a graceful shutdown doesn't lose the last
+        # mutation that fell inside the debounce window.
+        try:
+            state.save({sid: dict(s) for sid, s in sessions.items()})
+        except Exception as e:
+            log.warning("state save on shutdown failed: %s", e)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -649,6 +719,47 @@ async def _resize_window(socket: str, view_name: str, cols: int, rows: int) -> N
         pass
 
 
+async def _tmux_view_cmd(
+    socket: str, view_name: str, action: str, lines: int = 1
+) -> None:
+    """Run a whitelisted copy-mode command against the embedded view.
+
+    Each client's grouped view has its own tmux client, so copy-mode here
+    does not affect the user's own attached terminal on the same window.
+    """
+    if not socket or not view_name:
+        return
+    lines = max(1, min(int(lines), 200))
+    if action == "scroll_up":
+        argv = [
+            TMUX_BIN, "-S", socket,
+            "copy-mode", "-t", view_name, ";",
+            "send-keys", "-t", view_name, "-X", "-N", str(lines), "scroll-up",
+        ]
+    elif action == "scroll_down":
+        argv = [
+            TMUX_BIN, "-S", socket,
+            "copy-mode", "-t", view_name, ";",
+            "send-keys", "-t", view_name, "-X", "-N", str(lines), "scroll-down",
+        ]
+    elif action == "cancel":
+        argv = [
+            TMUX_BIN, "-S", socket,
+            "send-keys", "-t", view_name, "-X", "cancel",
+        ]
+    else:
+        return
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+    except Exception:
+        pass
+
+
 async def _kill_view(socket: str, view_name: str) -> None:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -668,6 +779,7 @@ async def embed_ws(ws: FastAPIWebSocket) -> None:
       {"type": "switch", "session_id": "<sid>", "cols": N, "rows": N}
       {"type": "resize", "cols": N, "rows": N}
       {"type": "input", "data": "..."}     (or binary frames containing raw bytes)
+      {"type": "tmux_cmd", "action": "scroll_up|scroll_down|cancel", "lines": N}
     Server → client: binary frames containing PTY output.
     """
     await ws.accept()
@@ -862,6 +974,16 @@ async def embed_ws(ws: FastAPIWebSocket) -> None:
                     data = ctl.get("data", "")
                     if state["fd"] >= 0 and data:
                         os.write(state["fd"], data.encode("utf-8", "ignore"))
+                elif ctype == "tmux_cmd":
+                    action = str(ctl.get("action", ""))
+                    try:
+                        lines = int(ctl.get("lines", 1))
+                    except (TypeError, ValueError):
+                        lines = 1
+                    if state["socket"] and state["view_name"]:
+                        await _tmux_view_cmd(
+                            state["socket"], state["view_name"], action, lines,
+                        )
         except WebSocketDisconnect:
             pass
         except Exception as e:
